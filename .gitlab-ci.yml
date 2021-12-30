@@ -1,0 +1,40 @@
+image: alpine:latest
+
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  REGISTRY_IMAGE_COMMIT: $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG/frontend:$CI_COMMIT_SHORT_SHA
+  REGISTRY_IMAGE_LATEST: $CI_REGISTRY_IMAGE/$CI_COMMIT_REF_SLUG/frontend:latest
+  DOCKER_TLS_CERTDIR: ""
+
+build:
+  image: docker:latest
+  stage: build
+  services:
+    - docker:dind
+  script:
+    - docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN registry.gitlab.com
+    - docker build -t $REGISTRY_IMAGE_LATEST -t $REGISTRY_IMAGE_COMMIT .
+    - docker push $REGISTRY_IMAGE_LATEST $REGISTRY_IMAGE_COMMIT
+  only:
+    - tag
+    - merge_requests
+
+deploy:
+  image: alpine:latest
+  stage: deploy
+  script:
+    - chmod og= $ID_RSA
+    - apk update
+    - apk add openssh-client
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN registry.gitlab.com"
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker pull $REGISTRY_IMAGE_LATEST"
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker container stop my_app && docker container rm my_app || true"
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker run -d -p 19000:19000 -p 19001:19001 -p 19002:19002 --privileged --network my_network --name my_app $REGISTRY_IMAGE_LATEST"
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker exec my_app bash -c 'apt-get update && apt-get install --yes iptables && sysctl -w net.ipv4.conf.all.route_localnet=1 && iptables -t nat -I PREROUTING -p tcp --dport 19002 -j DNAT --to 127.0.0.1:19002'"
+  only:
+    - tag
+    - merge_requests
